@@ -66,11 +66,12 @@ def findAllFigs(figureNamePattern, extensionPattern, texString):
 	return match
 
 def updateAllFigUrl(texString, nameToMatch, extension, pathToFolderWithFigs):
+	newTexString = texString
 	allFigs = getAllFigUrls(texString, nameToMatch, extension)
 	newPaths = [getUpdatedFigUrl(fig, pathToFolderWithFigs) for fig in allFigs]
 	for figPath,figNewPath in zip(allFigs, newPaths):
-		print(figPath, figNewPath)
-		beginning,end = texString.split(figPath)
+		print(f"'{figPath}' updated to '{figNewPath}'")
+		beginning,end = newTexString.split(figPath)
 		newTexString = beginning + figNewPath + end
 	return newTexString
 
@@ -120,26 +121,50 @@ def randomizeFigsAndQuestions(texString, figsToReplace=[], folderWithFigsOptions
 			texString = replaceFigRandomly(texString, fig, folderWithFigsOptions)
 
 	######################
-	# Randomize questions and answer order
+	# Randomize questions and answers order
 	[beginningDoc, questions, endDoc] = extractQuestions(texString)
 	# if multiple choice question, randomize choices order for each question
 	for i,question in enumerate(questions):
-		choicePattern = splitAtDelimiters(question, ["\\begin{choices}", "\\end{choices}"])
-		if (len(choicePattern)>1) & (len(choicePattern)==3):
-			start, choices, end = choicePattern
-			start = start+'\n\\begin{choices}'
-			end = '\\end{choices}\n'+end
-			choices = splitAtDelimitersAndKeep(choices, ["\choice", "\CorrectChoice"])
-			random.shuffle(choices)
-			questions[i] = "\n".join([start]+choices+[end])
-		elif len(choicePattern) == 1:
+		# Detect all the choices environments in the question.
+		# note: Remove parenthesis if want to keep tags too
+		regex = re.escape("\\begin{choices}") + r"(.*?)" + re.escape("\\end{choices}")
+		allMultiChoices = re.findall(regex, question, re.DOTALL)
+
+		if len(allMultiChoices) < 1: # not a multipart question
 			continue
 		else:
-			print(f"Error in length of choicePattern: {len(choicePattern)}")
-			break
+			# Split the questions in parts, to isolate multiple choices parts
+			regexPattern = '|'.join(map(re.escape, allMultiChoices))
+			splitQuestion = re.split(f"({regexPattern})", question)
+
+			# Shuffle the choices for all the multichoices parts
+			for k,part in enumerate(splitQuestion):
+				if part in allMultiChoices: # if a multichoice part
+					# get all the choices and randomize them
+					choices = splitAtDelimitersAndKeep(part, ["\choice", "\CorrectChoice"])
+					random.shuffle(choices)
+					randomizedChoicesString = "\n".join(choices)
+					# replace part with the new randomized choices
+					splitQuestion[k] = randomizedChoicesString
+			questions[i] = "\n".join(splitQuestion)
+
 
 	# add minipage environment to each question to prevent page break in question
-	questions = ["\n".join(["\\begin{minipage}{\linewidth}\n", question, "\\end{minipage}"]) for question in questions]
+	# if multi parts question, add the minipage to each part instead
+	for i,question in enumerate(questions):
+		# detect if parts in question
+		parts = splitAtDelimiters(question, ["\\begin{parts}", "\\end{parts}"])
+		if len(parts)>1:
+			print("Encountered a multiparts question")
+			beginning, parts, end = parts
+			beginning = beginning + '\n\\begin{parts}'
+			end = '\\end{parts}\n'+end
+			parts = splitAtDelimitersAndKeep(parts, ["\\part"])
+			parts = ["\n".join(["\\begin{minipage}{\linewidth}\n", part, "\\end{minipage}"]) for part in parts]
+			questions[i] = "\n".join([beginning] + parts + [end])
+		else:
+			questions[i] = "\n".join(["\\begin{minipage}{\linewidth}\n", question, "\\end{minipage}"])
+		# questions[i] = "\n".join(["\\begin{minipage}{\linewidth}\n", question, "\\end{minipage}"])
 
 	# randomize question order
 	random.shuffle(questions)
@@ -152,13 +177,18 @@ def processFileAndSave(texFile, outputName, outputFolder, figsToReplace=[], fold
 	# 1- open file
 	with open(texFile, 'rb') as f:
 		texString = f.read().decode('utf-8')
+
 	# 2- update paths of all figs in file if necessary
 	if updateFigPath["needed"]:
+		print("WILL REPLACE FIGS URL")
 		texString = updateAllFigUrl(texString, updateFigPath["nameToMatch"], updateFigPath["extension"], updateFigPath["pathToFolderWithFigs"])
+	
 	# 3- process file
 	texString = randomizeFigsAndQuestions(texString, figsToReplace=figsToReplace, folderWithFigsOptions=folderWithFigsOptions)
+	
 	# 4- save file
 	saveFile(texString, outputName, outputFolder)
+
 	# 5- log some info
 	print(f"file {texFile} processed and randomized!\nThe randomized version has been saved at {outputFolder}/{outputName}\n")
 	return
